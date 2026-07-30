@@ -1,0 +1,1 @@
+python test.py --cfg_file cfgs/nuscenes_models/bevfusion.yaml  --batch_size 2 --ckpt /home/danc1nc0de/Projects/CompBaselines/OpenPCDet/checkpoints/bevfusion/cbgs_bevfusion.pth
