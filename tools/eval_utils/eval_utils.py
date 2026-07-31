@@ -36,6 +36,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     dataset = dataloader.dataset
     class_names = dataset.class_names
     det_annos = []
+    gt_annos = []
 
     if getattr(args, 'infer_time', False):
         start_iter = int(len(dataloader) * 0.1)
@@ -78,6 +79,36 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             output_path=final_output_dir if args.save_to_file else None
         )
         det_annos += annos
+
+        # Collect ground truth boxes
+        if 'gt_boxes' in batch_dict:
+            for idx in range(batch_dict['batch_size']):
+                gt_boxes = batch_dict['gt_boxes'][idx]
+                # gt_boxes format: (N, 7 + 1) where last column is class label
+                # Filter out zero-padded boxes
+                if gt_boxes.shape[0] > 0:
+                    valid_mask = gt_boxes[:, 0].abs() > 1e-6  # non-zero center x
+                    gt_boxes = gt_boxes[valid_mask]
+                if gt_boxes.shape[0] > 0:
+                    gt_labels = gt_boxes[:, -1].cpu().numpy().astype(int)
+                    gt_boxes_lidar = gt_boxes[:, :7].cpu().numpy()
+                    gt_names = np.array([class_names[l - 1] for l in gt_labels])
+                    gt_anno = {
+                        'name': gt_names,
+                        'boxes_lidar': gt_boxes_lidar,
+                        'pred_labels': gt_labels,
+                        'frame_id': batch_dict['frame_id'][idx],
+                    }
+                    if 'metadata' in batch_dict:
+                        gt_anno['metadata'] = batch_dict['metadata'][idx]
+                else:
+                    gt_anno = {
+                        'name': np.zeros(0),
+                        'boxes_lidar': np.zeros((0, 7)),
+                        'pred_labels': np.zeros(0),
+                        'frame_id': batch_dict['frame_id'][idx],
+                    }
+                gt_annos.append(gt_anno)
         if cfg.LOCAL_RANK == 0:
             progress_bar.set_postfix(disp_dict)
             progress_bar.update()
@@ -121,6 +152,12 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
 
     with open(result_dir / 'result.pkl', 'wb') as f:
         pickle.dump(det_annos, f)
+
+    with open(result_dir / 'gt_result.pkl', 'wb') as f:
+        pickle.dump(gt_annos, f)
+
+    logger.info('Predictions saved to %s' % (result_dir / 'result.pkl'))
+    logger.info('Ground truth saved to %s' % (result_dir / 'gt_result.pkl'))
 
     result_str, result_dict = dataset.evaluation(
         det_annos, class_names,
