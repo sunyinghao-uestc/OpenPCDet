@@ -84,14 +84,17 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         if 'gt_boxes' in batch_dict:
             for idx in range(batch_dict['batch_size']):
                 gt_boxes = batch_dict['gt_boxes'][idx]
-                # gt_boxes format: (N, 7 + 1) where last column is class label
+                # gt_boxes format: (N, 7 + C + 1) where the last column is class label
+                # and C is the number of extra attributes (e.g., velocity vx, vy for nuScenes)
                 # Filter out zero-padded boxes
                 if gt_boxes.shape[0] > 0:
                     valid_mask = gt_boxes[:, 0].abs() > 1e-6  # non-zero center x
                     gt_boxes = gt_boxes[valid_mask]
+                box_dim = batch_dict['gt_boxes'][idx].shape[-1] - 1  # exclude the class label column
                 if gt_boxes.shape[0] > 0:
                     gt_labels = gt_boxes[:, -1].cpu().numpy().astype(int)
-                    gt_boxes_lidar = gt_boxes[:, :7].cpu().numpy()
+                    # keep all attributes (x, y, z, l, w, h, yaw, and velocity vx, vy when available)
+                    gt_boxes_lidar = gt_boxes[:, :-1].cpu().numpy()
                     gt_names = np.array([class_names[l - 1] for l in gt_labels])
                     gt_anno = {
                         'name': gt_names,
@@ -104,7 +107,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                 else:
                     gt_anno = {
                         'name': np.zeros(0),
-                        'boxes_lidar': np.zeros((0, 7)),
+                        'boxes_lidar': np.zeros((0, box_dim)),
                         'pred_labels': np.zeros(0),
                         'frame_id': batch_dict['frame_id'][idx],
                     }
@@ -150,14 +153,11 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     logger.info('Average predicted number of objects(%d samples): %.3f'
                 % (len(det_annos), total_pred_objects / max(1, len(det_annos))))
 
+    # Save predictions and ground truth merged into a single pkl file
     with open(result_dir / 'result.pkl', 'wb') as f:
-        pickle.dump(det_annos, f)
+        pickle.dump({'pred': det_annos, 'gt': gt_annos}, f)
 
-    with open(result_dir / 'gt_result.pkl', 'wb') as f:
-        pickle.dump(gt_annos, f)
-
-    logger.info('Predictions saved to %s' % (result_dir / 'result.pkl'))
-    logger.info('Ground truth saved to %s' % (result_dir / 'gt_result.pkl'))
+    logger.info('Predictions and ground truth saved to %s' % (result_dir / 'result.pkl'))
 
     result_str, result_dict = dataset.evaluation(
         det_annos, class_names,
