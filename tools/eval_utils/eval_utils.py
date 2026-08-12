@@ -153,11 +153,13 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     logger.info('Average predicted number of objects(%d samples): %.3f'
                 % (len(det_annos), total_pred_objects / max(1, len(det_annos))))
 
-    # Save predictions and ground truth merged into a single pkl file
-    with open(result_dir / 'result.pkl', 'wb') as f:
+    # Save predictions and ground truth merged into a single pkl file,
+    # named by the evaluated split (e.g. result_val.pkl / result_train.pkl)
+    result_file = result_dir / ('result_%s.pkl' % cfg.DATA_CONFIG.DATA_SPLIT['test'])
+    with open(result_file, 'wb') as f:
         pickle.dump({'pred': det_annos, 'gt': gt_annos}, f)
 
-    logger.info('Predictions and ground truth saved to %s' % (result_dir / 'result.pkl'))
+    logger.info('Predictions and ground truth saved to %s' % result_file)
 
     result_str, result_dict = dataset.evaluation(
         det_annos, class_names,

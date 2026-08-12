@@ -40,6 +40,8 @@ def parse_config():
     parser.add_argument('--ckpt_dir', type=str, default=None, help='specify a ckpt directory to be evaluated if needed')
     parser.add_argument('--save_to_file', action='store_true', default=False, help='')
     parser.add_argument('--infer_time', action='store_true', default=False, help='calculate inference latency')
+    parser.add_argument('--split', type=str, choices=['val', 'train'], default=None,
+                        help='which dataset split to evaluate; default: both val and train')
 
     args = parser.parse_args()
 
@@ -162,48 +164,63 @@ def main():
     output_dir = cfg.ROOT_DIR / 'output' / cfg.EXP_GROUP_PATH / cfg.TAG / args.extra_tag
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    eval_output_dir = output_dir / 'eval'
-
-    if not args.eval_all:
-        num_list = re.findall(r'\d+', args.ckpt) if args.ckpt is not None else []
-        epoch_id = num_list[-1] if num_list.__len__() > 0 else 'no_number'
-        eval_output_dir = eval_output_dir / ('epoch_%s' % epoch_id) / cfg.DATA_CONFIG.DATA_SPLIT['test']
-    else:
-        eval_output_dir = eval_output_dir / 'eval_all_default'
-
-    if args.eval_tag is not None:
-        eval_output_dir = eval_output_dir / args.eval_tag
-
-    eval_output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = eval_output_dir / ('log_eval_%s.txt' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
-    logger = common_utils.create_logger(log_file, rank=cfg.LOCAL_RANK)
-
-    # log to file
-    logger.info('**********************Start logging**********************')
-    gpu_list = os.environ['CUDA_VISIBLE_DEVICES'] if 'CUDA_VISIBLE_DEVICES' in os.environ.keys() else 'ALL'
-    logger.info('CUDA_VISIBLE_DEVICES=%s' % gpu_list)
-
-    if dist_test:
-        logger.info('total_batch_size: %d' % (total_gpus * args.batch_size))
-    for key, val in vars(args).items():
-        logger.info('{:16} {}'.format(key, val))
-    log_config_to_file(cfg, logger=logger)
-
+    eval_output_dir_base = output_dir / 'eval'
     ckpt_dir = args.ckpt_dir if args.ckpt_dir is not None else output_dir / 'ckpt'
 
-    test_set, test_loader, sampler = build_dataloader(
-        dataset_cfg=cfg.DATA_CONFIG,
-        class_names=cfg.CLASS_NAMES,
-        batch_size=args.batch_size,
-        dist=dist_test, workers=args.workers, logger=logger, training=False
-    )
+    # When --split is not specified, run inference on both val and train splits
+    splits = [args.split] if args.split is not None else ['val', 'train']
 
-    model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
-    with torch.no_grad():
-        if args.eval_all:
-            repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=dist_test)
+    model = None
+    for split in splits:
+        # Select the split: datasets load infos via INFO_PATH[mode] (mode == 'test'
+        # when training=False), so point the test-mode infos at the requested split.
+        # 'val' is already the default; 'train' needs the infos redirected.
+        cfg.DATA_CONFIG.DATA_SPLIT['test'] = split
+        if split == 'train':
+            cfg.DATA_CONFIG.INFO_PATH['test'] = cfg.DATA_CONFIG.INFO_PATH['train']
+
+        if not args.eval_all:
+            num_list = re.findall(r'\d+', args.ckpt) if args.ckpt is not None else []
+            epoch_id = num_list[-1] if num_list.__len__() > 0 else 'no_number'
+            eval_output_dir = eval_output_dir_base / ('epoch_%s' % epoch_id) / split
         else:
-            eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id, dist_test=dist_test)
+            eval_output_dir = eval_output_dir_base / 'eval_all_default' / split
+
+        if args.eval_tag is not None:
+            eval_output_dir = eval_output_dir / args.eval_tag
+
+        eval_output_dir.mkdir(parents=True, exist_ok=True)
+        log_file = eval_output_dir / ('log_eval_%s.txt' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
+        logger = common_utils.create_logger(log_file, rank=cfg.LOCAL_RANK)
+
+        # log to file
+        logger.info('**********************Start logging**********************')
+        logger.info('Evaluating on %s split' % split)
+        gpu_list = os.environ['CUDA_VISIBLE_DEVICES'] if 'CUDA_VISIBLE_DEVICES' in os.environ.keys() else 'ALL'
+        logger.info('CUDA_VISIBLE_DEVICES=%s' % gpu_list)
+
+        if dist_test:
+            logger.info('total_batch_size: %d' % (total_gpus * args.batch_size))
+        for key, val in vars(args).items():
+            logger.info('{:16} {}'.format(key, val))
+        log_config_to_file(cfg, logger=logger)
+
+        test_set, test_loader, sampler = build_dataloader(
+            dataset_cfg=cfg.DATA_CONFIG,
+            class_names=cfg.CLASS_NAMES,
+            batch_size=args.batch_size,
+            dist=dist_test, workers=args.workers, logger=logger, training=False
+        )
+
+        # Build the model once — the weights are split-independent, only the
+        # dataloader changes between splits
+        if model is None:
+            model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
+        with torch.no_grad():
+            if args.eval_all:
+                repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=dist_test)
+            else:
+                eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id, dist_test=dist_test)
 
 
 if __name__ == '__main__':
