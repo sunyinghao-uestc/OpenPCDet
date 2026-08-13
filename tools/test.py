@@ -170,14 +170,18 @@ def main():
     # When --split is not specified, run inference on both val and train splits
     splits = [args.split] if args.split is not None else ['val', 'train']
 
+    # Select the split: datasets load infos via INFO_PATH[mode] (mode == 'test'
+    # when training=False), so point the test-mode infos at the requested split.
+    # 'val' is already the default; 'train' needs the infos redirected.
+    info_path_test_backup = cfg.DATA_CONFIG.INFO_PATH['test']
+
     model = None
     for split in splits:
-        # Select the split: datasets load infos via INFO_PATH[mode] (mode == 'test'
-        # when training=False), so point the test-mode infos at the requested split.
-        # 'val' is already the default; 'train' needs the infos redirected.
         cfg.DATA_CONFIG.DATA_SPLIT['test'] = split
         if split == 'train':
             cfg.DATA_CONFIG.INFO_PATH['test'] = cfg.DATA_CONFIG.INFO_PATH['train']
+        else:
+            cfg.DATA_CONFIG.INFO_PATH['test'] = info_path_test_backup
 
         if not args.eval_all:
             num_list = re.findall(r'\d+', args.ckpt) if args.ckpt is not None else []

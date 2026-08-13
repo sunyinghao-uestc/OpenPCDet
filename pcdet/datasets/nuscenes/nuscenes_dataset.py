@@ -19,6 +19,7 @@ class NuScenesDataset(DatasetTemplate):
             dataset_cfg=dataset_cfg, class_names=class_names, training=training, root_path=root_path, logger=logger
         )
         self.infos = []
+        self.split = self.dataset_cfg.DATA_SPLIT[self.mode]
         self.camera_config = self.dataset_cfg.get('CAMERA_CONFIG', None)
         if self.camera_config is not None:
             self.use_camera = self.camera_config.get('USE_CAMERA', True)
@@ -254,6 +255,15 @@ class NuScenesDataset(DatasetTemplate):
         return data_dict
 
     def evaluation(self, det_annos, class_names, **kwargs):
+        # The official devkit evaluation (NuScenesEval.main) only covers the val
+        # GT set and loads all predictions + GT into memory at once — on the train
+        # split (4.7x more frames) this causes OOM. result.pkl is already saved by
+        # eval_one_epoch before this call, so skip the whole devkit pipeline for
+        # non-official splits ('test' still dumps the submission json below).
+        if self.split not in ['val', 'test']:
+            self.logger.info('Skip official NuScenesEval on %s split (results saved to result.pkl)' % self.split)
+            return None, {}
+
         import json
         from nuscenes.nuscenes import NuScenes
         from . import nuscenes_utils
